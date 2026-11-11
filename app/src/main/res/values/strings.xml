@@ -1,0 +1,27 @@
+<resources>
+    <string name="app_name">Trình xem tài liệu Kira</string>
+    <string name="app_short_name">Kira Docs</string>
+    <string name="search_hint">Tìm kiếm tài liệu, bảng tính, bài thuyết trình…</string>
+    <string name="tab_recent">Gần đây</string>
+    <string name="tab_favorites">Yêu thích</string>
+    <string name="tab_all">Tất cả file</string>
+    <string name="tab_settings">Cài đặt</string>
+    <string name="filter_all">Tất cả</string>
+    <string name="filter_word">Word</string>
+    <string name="filter_excel">Excel</string>
+    <string name="filter_ppt">PowerPoint</string>
+    <string name="filter_pdf">PDF</string>
+    <string name="filter_text">TXT/CSV</string>
+    <string name="open_file">Mở tệp</string>
+    <string name="new_file">Tạo mới</string>
+    <string name="no_documents">Chưa có tài liệu nào</string>
+    <string name="no_favorites">Chưa có tài liệu yêu thích</string>
+    <string name="no_search_results">Không tìm thấy tài liệu phù hợp</string>
+    <string name="sort_by">Sắp xếp theo</string>
+    <string name="sort_name_asc">Tên (A → Z)</string>
+    <string name="sort_name_desc">Tên (Z → A)</string>
+    <string name="sort_date_desc">Mới nhất trước</string>
+    <string name="sort_date_asc">Cũ nhất trước</string>
+    <string name="sort_size_desc">Kích thước lớn nhất</string>
+    <string name="sort_size_asc">Kích thước nhỏ nhất</string>
+</resources>

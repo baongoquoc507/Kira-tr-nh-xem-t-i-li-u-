@@ -1,0 +1,6 @@
+{
+  "name": "Trình xem tài liệu Kira",
+  "description": "Trình xem và chỉnh sửa file Office (Word, Excel, PowerPoint, PDF, TXT/CSV) hoàn toàn offline với phong cách iOS 27 Liquid Glass.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
