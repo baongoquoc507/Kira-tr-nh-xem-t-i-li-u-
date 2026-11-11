@@ -20,7 +20,16 @@ import java.io.InputStreamReader
 import java.io.StringReader
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
-import java.util.zip.ZipOutputStream
+
+data class ExcelCellStyle(
+    val isBold: Boolean = false,
+    val isItalic: Boolean = false,
+    val textColorHex: String? = null,
+    val bgColorHex: String? = null,
+    val fontSizePt: Float = 11f,
+    val alignment: String = "left", // left, center, right
+    val numFmtId: Int = 0
+)
 
 data class ExcelCell(
     val row: Int,
@@ -28,24 +37,36 @@ data class ExcelCell(
     var rawValue: String = "",
     var formula: String? = null,
     var isBold: Boolean = false,
-    var bgColor: Int? = null
+    var bgColor: Int? = null,
+    var style: ExcelCellStyle = ExcelCellStyle()
 ) {
     fun getDisplayValue(allCells: Map<String, ExcelCell>): String {
         val form = formula
         if (!form.isNullOrEmpty() && form.startsWith("=")) {
             return ExcelFormulaEvaluator.evaluate(form, allCells)
         }
-        return rawValue
+        return formatNumberIfNeeded(rawValue, style.numFmtId)
+    }
+
+    private fun formatNumberIfNeeded(raw: String, numFmt: Int): String {
+        val d = raw.toDoubleOrNull() ?: return raw
+        return when (numFmt) {
+            9, 10 -> String.format("%.1f%%", d * 100) // Percentage
+            2, 4 -> String.format("%,.2f", d) // Currency / Decimal
+            else -> if (d % 1.0 == 0.0 && d < 1e12 && d > -1e12) d.toLong().toString() else raw
+        }
     }
 }
 
 data class ExcelSheet(
     var name: String,
     val cells: MutableMap<String, ExcelCell> = mutableMapOf(), // Key: "R,C"
-    var maxRow: Int = 20,
-    var maxCol: Int = 8,
+    var maxRow: Int = 30,
+    var maxCol: Int = 10,
     var frozenRows: Int = 1,
-    var frozenCols: Int = 1
+    var frozenCols: Int = 1,
+    val colWidths: MutableMap<Int, Float> = mutableMapOf(),
+    val mergedRegions: MutableList<Pair<Pair<Int, Int>, Pair<Int, Int>>> = mutableListOf() // ((r1, c1), (r2, c2))
 ) {
     fun getCell(r: Int, c: Int): ExcelCell {
         return cells.getOrPut("$r,$c") { ExcelCell(row = r, col = c) }
@@ -60,8 +81,12 @@ data class ExcelSheet(
             cell.formula = null
             cell.rawValue = value
         }
-        if (r >= maxRow) maxRow = r + 10
+        if (r >= maxRow) maxRow = r + 15
         if (c >= maxCol) maxCol = c + 5
+    }
+
+    fun getColWidth(col: Int): Float {
+        return colWidths[col] ?: 115f
     }
 }
 
@@ -73,7 +98,8 @@ object ExcelFormulaEvaluator {
                 upper.startsWith("=SUM(") -> {
                     val range = upper.substring(5, upper.lastIndexOf(")"))
                     val nums = extractRangeNumbers(range, cells)
-                    nums.sum().let { if (it % 1.0 == 0.0) it.toLong().toString() else String.format("%.2f", it) }
+                    val s = nums.sum()
+                    if (s % 1.0 == 0.0) s.toLong().toString() else String.format("%.2f", s)
                 }
                 upper.startsWith("=AVERAGE(") -> {
                     val range = upper.substring(9, upper.lastIndexOf(")"))
@@ -86,35 +112,105 @@ object ExcelFormulaEvaluator {
                 upper.startsWith("=MIN(") -> {
                     val range = upper.substring(5, upper.lastIndexOf(")"))
                     val nums = extractRangeNumbers(range, cells)
-                    nums.minOrNull()?.toString() ?: "0"
+                    val m = nums.minOrNull() ?: 0.0
+                    if (m % 1.0 == 0.0) m.toLong().toString() else String.format("%.2f", m)
                 }
                 upper.startsWith("=MAX(") -> {
                     val range = upper.substring(5, upper.lastIndexOf(")"))
                     val nums = extractRangeNumbers(range, cells)
-                    nums.maxOrNull()?.toString() ?: "0"
+                    val m = nums.maxOrNull() ?: 0.0
+                    if (m % 1.0 == 0.0) m.toLong().toString() else String.format("%.2f", m)
                 }
-                upper.startsWith("=COUNT(") -> {
-                    val range = upper.substring(7, upper.lastIndexOf(")"))
+                upper.startsWith("=COUNT(") || upper.startsWith("=COUNTA(") -> {
+                    val range = upper.substring(upper.indexOf("(") + 1, upper.lastIndexOf(")"))
                     extractRangeNumbers(range, cells).size.toString()
                 }
+                upper.startsWith("=PRODUCT(") -> {
+                    val range = upper.substring(9, upper.lastIndexOf(")"))
+                    val nums = extractRangeNumbers(range, cells)
+                    val p = if (nums.isEmpty()) 0.0 else nums.fold(1.0) { acc, d -> acc * d }
+                    if (p % 1.0 == 0.0) p.toLong().toString() else String.format("%.2f", p)
+                }
+                upper.startsWith("=IF(") -> {
+                    // Basic IF(A1>0, trueVal, falseVal)
+                    val inner = formula.substring(4, formula.lastIndexOf(")"))
+                    val parts = inner.split(",")
+                    if (parts.size >= 2) {
+                        val cond = parts[0].trim()
+                        val isTrue = evaluateCondition(cond, cells)
+                        if (isTrue) parts[1].trim().trim('"') else if (parts.size > 2) parts[2].trim().trim('"') else "FALSE"
+                    } else formula
+                }
                 else -> {
-                    // Try basic expression (e.g. =A1+B1)
                     val expr = upper.removePrefix("=")
-                    if (expr.contains("+")) {
-                        val parts = expr.split("+")
-                        val sum = parts.sumOf { getCellValueAsDouble(it.trim(), cells) }
-                        if (sum % 1.0 == 0.0) sum.toLong().toString() else String.format("%.2f", sum)
-                    } else if (expr.contains("*")) {
-                        val parts = expr.split("*")
-                        val prod = parts.fold(1.0) { acc, s -> acc * getCellValueAsDouble(s.trim(), cells) }
-                        if (prod % 1.0 == 0.0) prod.toLong().toString() else String.format("%.2f", prod)
-                    } else {
-                        formula
+                    when {
+                        expr.contains("+") -> {
+                            val parts = expr.split("+")
+                            val sum = parts.sumOf { getCellValueAsDouble(it.trim(), cells) }
+                            if (sum % 1.0 == 0.0) sum.toLong().toString() else String.format("%.2f", sum)
+                        }
+                        expr.contains("-") -> {
+                            val parts = expr.split("-")
+                            if (parts.isNotEmpty()) {
+                                var res = getCellValueAsDouble(parts[0].trim(), cells)
+                                for (p in parts.drop(1)) {
+                                    res -= getCellValueAsDouble(p.trim(), cells)
+                                }
+                                if (res % 1.0 == 0.0) res.toLong().toString() else String.format("%.2f", res)
+                            } else formula
+                        }
+                        expr.contains("*") -> {
+                            val parts = expr.split("*")
+                            val prod = parts.fold(1.0) { acc, s -> acc * getCellValueAsDouble(s.trim(), cells) }
+                            if (prod % 1.0 == 0.0) prod.toLong().toString() else String.format("%.2f", prod)
+                        }
+                        expr.contains("/") -> {
+                            val parts = expr.split("/")
+                            if (parts.size == 2) {
+                                val n1 = getCellValueAsDouble(parts[0].trim(), cells)
+                                val n2 = getCellValueAsDouble(parts[1].trim(), cells)
+                                if (n2 != 0.0) {
+                                    val q = n1 / n2
+                                    if (q % 1.0 == 0.0) q.toLong().toString() else String.format("%.2f", q)
+                                } else "#DIV/0!"
+                            } else formula
+                        }
+                        else -> {
+                            // Single coordinate reference e.g. =A1
+                            val d = getCellValueAsDouble(expr, cells)
+                            if (d != 0.0) d.toString() else cells[coordToKey(expr)]?.rawValue ?: formula
+                        }
                     }
                 }
             }
         } catch (_: Exception) {
             "#ERROR!"
+        }
+    }
+
+    private fun evaluateCondition(cond: String, cells: Map<String, ExcelCell>): Boolean {
+        return when {
+            cond.contains(">=") -> {
+                val p = cond.split(">=")
+                getCellValueAsDouble(p[0].trim(), cells) >= getCellValueAsDouble(p[1].trim(), cells)
+            }
+            cond.contains("<=") -> {
+                val p = cond.split("<=")
+                getCellValueAsDouble(p[0].trim(), cells) <= getCellValueAsDouble(p[1].trim(), cells)
+            }
+            cond.contains(">") -> {
+                val p = cond.split(">")
+                getCellValueAsDouble(p[0].trim(), cells) > getCellValueAsDouble(p[1].trim(), cells)
+            }
+            cond.contains("<") -> {
+                val p = cond.split("<")
+                getCellValueAsDouble(p[0].trim(), cells) < getCellValueAsDouble(p[1].trim(), cells)
+            }
+            cond.contains("=") -> {
+                val p = cond.split("=")
+                getCellValueAsDouble(p[0].trim(), cells) == getCellValueAsDouble(p[1].trim(), cells)
+            }
+            else -> false
         }
     }
 
@@ -131,8 +227,15 @@ object ExcelFormulaEvaluator {
                     raw?.toDoubleOrNull()?.let { list.add(it) }
                 }
             }
+        } else {
+            getCellValueAsDouble(rangeStr.trim(), cells).let { list.add(it) }
         }
         return list
+    }
+
+    private fun coordToKey(coord: String): String {
+        val (c, r) = parseCoord(coord)
+        return "$r,$c"
     }
 
     private fun getCellValueAsDouble(coordStr: String, cells: Map<String, ExcelCell>): Double {
@@ -142,7 +245,7 @@ object ExcelFormulaEvaluator {
     }
 
     fun parseCoord(coord: String): Pair<Int, Int> {
-        val colLetters = coord.filter { it.isLetter() }
+        val colLetters = coord.filter { it.isLetter() }.uppercase()
         val rowDigits = coord.filter { it.isDigit() }
         var col = 0
         for (ch in colLetters) {
@@ -199,17 +302,15 @@ class ExcelDocumentEngine : DocumentEngine {
             } else if (isXls) {
                 parseLegacyXls(context, uri)
             } else {
-                parseXlsx(context, uri)
+                parseXlsxFull(context, uri)
             }
 
             if (sheets.isEmpty()) {
                 val defaultSheet = ExcelSheet("Sheet1")
-                // Populate initial template
-                defaultSheet.setCell(0, 0, "STT")
-                defaultSheet.setCell(0, 1, "Mục")
-                defaultSheet.setCell(0, 2, "Số lượng")
-                defaultSheet.setCell(0, 3, "Đơn giá")
-                defaultSheet.setCell(0, 4, "Tổng cộng")
+                defaultSheet.setCell(0, 0, "Mục")
+                defaultSheet.setCell(0, 1, "Số lượng")
+                defaultSheet.setCell(0, 2, "Đơn giá")
+                defaultSheet.setCell(0, 3, "Thành tiền")
                 sheets.add(defaultSheet)
             }
 
@@ -237,46 +338,63 @@ class ExcelDocumentEngine : DocumentEngine {
                     val cols = line.split(",", ";", "\t")
                     for ((c, cell) in cols.withIndex()) {
                         sheet.setCell(r, c, cell.trim().trim('"'))
+                        if (r == 0) {
+                            sheet.getCell(r, c).isBold = true
+                            sheet.getCell(r, c).style = ExcelCellStyle(isBold = true, bgColorHex = "#F3F4F6")
+                        }
                     }
                     r++
                 }
-                sheet.maxRow = maxOf(r + 5, 20)
+                sheet.maxRow = maxOf(r + 10, 30)
+                sheet.maxCol = maxOf(sheet.cells.keys.map { it.substringAfter(",").toInt() }.maxOrNull() ?: 8, 8)
             }
         }
         sheets.add(sheet)
     }
 
     private fun parseLegacyXls(context: Context, uri: Uri) {
-        // Stream text scan fallback for older BIFF8 XLS
         val sheet = ExcelSheet("Trang tính")
         context.contentResolver.openInputStream(uri)?.use { stream ->
             val bytes = stream.readBytes()
             val text = String(bytes, Charsets.ISO_8859_1).filter { it.code in 32..126 || it == '\t' || it == '\n' }
             val lines = text.split("\n").filter { it.isNotBlank() }
-            for ((r, line) in lines.take(50).withIndex()) {
+            for ((r, line) in lines.take(100).withIndex()) {
                 val cols = line.split("\t", ",")
-                for ((c, col) in cols.take(10).withIndex()) {
+                for ((c, col) in cols.take(15).withIndex()) {
                     sheet.setCell(r, c, col.trim())
+                    if (r == 0) sheet.getCell(r, c).isBold = true
                 }
             }
         }
         sheets.add(sheet)
     }
 
-    private fun parseXlsx(context: Context, uri: Uri) {
+    private fun parseXlsxFull(context: Context, uri: Uri) {
         try {
             val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return
             val zis = ZipInputStream(ByteArrayInputStream(bytes))
             var entry: ZipEntry? = zis.nextEntry
 
             val sharedStrings = mutableListOf<String>()
+            val stylesList = mutableListOf<ExcelCellStyle>()
             val sheetXmls = mutableMapOf<String, String>()
+            val sheetNames = mutableMapOf<String, String>()
 
             while (entry != null) {
-                if (entry.name == "xl/sharedStrings.xml") {
-                    sharedStrings.addAll(parseSharedStrings(readEntryToString(zis)))
-                } else if (entry.name.startsWith("xl/worksheets/sheet") && entry.name.endsWith(".xml")) {
-                    sheetXmls[entry.name] = readEntryToString(zis)
+                val entryName = entry.name
+                when {
+                    entryName == "xl/sharedStrings.xml" -> {
+                        sharedStrings.addAll(parseSharedStrings(readEntryToString(zis)))
+                    }
+                    entryName == "xl/styles.xml" -> {
+                        stylesList.addAll(parseStylesXml(readEntryToString(zis)))
+                    }
+                    entryName == "xl/workbook.xml" -> {
+                        sheetNames.putAll(parseWorkbookSheetNames(readEntryToString(zis)))
+                    }
+                    entryName.startsWith("xl/worksheets/sheet") && entryName.endsWith(".xml") -> {
+                        sheetXmls[entryName] = readEntryToString(zis)
+                    }
                 }
                 entry = zis.nextEntry
             }
@@ -284,19 +402,126 @@ class ExcelDocumentEngine : DocumentEngine {
 
             if (sheetXmls.isNotEmpty()) {
                 sheetXmls.toSortedMap().forEach { (path, xml) ->
-                    val sheetIndex = path.filter { it.isDigit() }.toIntOrNull() ?: 1
-                    val sheet = parseWorksheetXml("Trang tính $sheetIndex", xml, sharedStrings)
+                    val sheetKey = path.substringAfterLast("/")
+                    val name = sheetNames[sheetKey] ?: "Trang tính ${sheets.size + 1}"
+                    val sheet = parseWorksheetXmlFull(name, xml, sharedStrings, stylesList)
                     sheets.add(sheet)
                 }
             }
-        } catch (_: Exception) {
-            // If failed, create fresh sheet
-        }
+        } catch (_: Exception) {}
+    }
+
+    private fun parseWorkbookSheetNames(xml: String): Map<String, String> {
+        val map = mutableMapOf<String, String>()
+        try {
+            val factory = XmlPullParserFactory.newInstance()
+            val parser = factory.newPullParser()
+            parser.setInput(StringReader(xml))
+            var event = parser.eventType
+            var idx = 1
+            while (event != XmlPullParser.END_DOCUMENT) {
+                if (event == XmlPullParser.START_TAG && parser.name?.equals("sheet", ignoreCase = true) == true) {
+                    val sheetName = parser.getAttributeValue(null, "name")
+                    if (!sheetName.isNullOrEmpty()) {
+                        map["sheet$idx.xml"] = sheetName
+                        idx++
+                    }
+                }
+                event = parser.next()
+            }
+        } catch (_: Exception) {}
+        return map
+    }
+
+    private fun parseStylesXml(xml: String): List<ExcelCellStyle> {
+        val styles = mutableListOf<ExcelCellStyle>()
+        val fills = mutableListOf<String?>() // fill colors
+        val fonts = mutableListOf<Pair<Boolean, String?>>() // isBold, colorHex
+
+        try {
+            val factory = XmlPullParserFactory.newInstance()
+            val parser = factory.newPullParser()
+            parser.setInput(StringReader(xml))
+            var event = parser.eventType
+
+            var inFills = false
+            var inFonts = false
+            var inCellXfs = false
+
+            var currentFontBold = false
+            var currentFontColor: String? = null
+            var currentFillColor: String? = null
+
+            while (event != XmlPullParser.END_DOCUMENT) {
+                val tag = parser.name?.lowercase() ?: ""
+                when (event) {
+                    XmlPullParser.START_TAG -> {
+                        when (tag) {
+                            "fills" -> inFills = true
+                            "fonts" -> inFonts = true
+                            "cellxfs" -> inCellXfs = true
+                            "font" -> {
+                                currentFontBold = false
+                                currentFontColor = null
+                            }
+                            "b" -> if (inFonts) currentFontBold = true
+                            "color" -> {
+                                if (inFonts) {
+                                    val rgb = parser.getAttributeValue(null, "rgb")
+                                    if (!rgb.isNullOrEmpty()) currentFontColor = "#" + rgb.takeLast(6)
+                                }
+                            }
+                            "fgcolor" -> {
+                                if (inFills) {
+                                    val rgb = parser.getAttributeValue(null, "rgb")
+                                    if (!rgb.isNullOrEmpty()) currentFillColor = "#" + rgb.takeLast(6)
+                                }
+                            }
+                            "xf" -> {
+                                if (inCellXfs) {
+                                    val fontId = parser.getAttributeValue(null, "fontId")?.toIntOrNull() ?: 0
+                                    val fillId = parser.getAttributeValue(null, "fillId")?.toIntOrNull() ?: 0
+                                    val numFmtId = parser.getAttributeValue(null, "numFmtId")?.toIntOrNull() ?: 0
+
+                                    val fontInfo = fonts.getOrNull(fontId)
+                                    val fillCol = fills.getOrNull(fillId)
+
+                                    styles.add(
+                                        ExcelCellStyle(
+                                            isBold = fontInfo?.first ?: false,
+                                            textColorHex = fontInfo?.second,
+                                            bgColorHex = fillCol,
+                                            numFmtId = numFmtId
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    XmlPullParser.END_TAG -> {
+                        when (tag) {
+                            "fills" -> inFills = false
+                            "fonts" -> inFonts = false
+                            "cellxfs" -> inCellXfs = false
+                            "font" -> if (inFonts) fonts.add(Pair(currentFontBold, currentFontColor))
+                            "fill" -> {
+                                if (inFills) {
+                                    fills.add(currentFillColor)
+                                    currentFillColor = null
+                                }
+                            }
+                        }
+                    }
+                }
+                event = parser.next()
+            }
+        } catch (_: Exception) {}
+        return styles
     }
 
     private fun readEntryToString(zis: ZipInputStream): String {
         val baos = ByteArrayOutputStream()
-        val buf = ByteArray(1024)
+        val buf = ByteArray(2048)
         var len: Int
         while (zis.read(buf).also { len = it } > 0) {
             baos.write(buf, 0, len)
@@ -311,7 +536,7 @@ class ExcelDocumentEngine : DocumentEngine {
         parser.setInput(StringReader(xml))
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
-            if (event == XmlPullParser.START_TAG && parser.name?.lowercase() == "t") {
+            if (event == XmlPullParser.START_TAG && parser.name?.equals("t", ignoreCase = true) == true) {
                 list.add(parser.nextText())
             }
             event = parser.next()
@@ -319,7 +544,12 @@ class ExcelDocumentEngine : DocumentEngine {
         return list
     }
 
-    private fun parseWorksheetXml(name: String, xml: String, sharedStrings: List<String>): ExcelSheet {
+    private fun parseWorksheetXmlFull(
+        name: String,
+        xml: String,
+        sharedStrings: List<String>,
+        stylesList: List<ExcelCellStyle>
+    ): ExcelSheet {
         val sheet = ExcelSheet(name)
         val factory = XmlPullParserFactory.newInstance()
         val parser = factory.newPullParser()
@@ -328,23 +558,36 @@ class ExcelDocumentEngine : DocumentEngine {
         var event = parser.eventType
         var currentCellRef = ""
         var isSharedString = false
+        var isInlineString = false
         var currentFormula: String? = null
+        var currentStyleIdx = 0
 
         while (event != XmlPullParser.END_DOCUMENT) {
             val tag = parser.name?.lowercase() ?: ""
             when (event) {
                 XmlPullParser.START_TAG -> {
                     when (tag) {
+                        "col" -> {
+                            val minCol = (parser.getAttributeValue(null, "min")?.toIntOrNull() ?: 1) - 1
+                            val maxCol = (parser.getAttributeValue(null, "max")?.toIntOrNull() ?: 1) - 1
+                            val width = parser.getAttributeValue(null, "width")?.toFloatOrNull() ?: 10f
+                            val pxW = (width * 8.5f).coerceIn(60f, 320f)
+                            for (c in minCol..maxCol) {
+                                sheet.colWidths[c] = pxW
+                            }
+                        }
                         "c" -> {
                             currentCellRef = parser.getAttributeValue(null, "r") ?: ""
                             val type = parser.getAttributeValue(null, "t")
                             isSharedString = (type == "s")
+                            isInlineString = (type == "inlineStr")
+                            currentStyleIdx = parser.getAttributeValue(null, "s")?.toIntOrNull() ?: 0
                             currentFormula = null
                         }
                         "f" -> {
                             currentFormula = "=" + parser.nextText()
                         }
-                        "v" -> {
+                        "v", "t" -> {
                             val value = parser.nextText()
                             if (currentCellRef.isNotEmpty()) {
                                 val (c, r) = ExcelFormulaEvaluator.parseCoord(currentCellRef)
@@ -355,8 +598,17 @@ class ExcelDocumentEngine : DocumentEngine {
                                     value
                                 }
                                 sheet.setCell(r, c, finalVal)
+                                val cell = sheet.getCell(r, c)
                                 if (currentFormula != null) {
-                                    sheet.getCell(r, c).formula = currentFormula
+                                    cell.formula = currentFormula
+                                }
+                                if (currentStyleIdx in stylesList.indices) {
+                                    val s = stylesList[currentStyleIdx]
+                                    cell.style = s
+                                    cell.isBold = s.isBold
+                                    s.bgColorHex?.let { h ->
+                                        try { cell.bgColor = AndroidColor.parseColor(h) } catch (_: Exception) {}
+                                    }
                                 }
                             }
                         }
@@ -385,7 +637,7 @@ class ExcelDocumentEngine : DocumentEngine {
             color = AndroidColor.BLACK
         }
         val gridPaint = Paint().apply {
-            color = AndroidColor.LTGRAY
+            color = AndroidColor.parseColor("#E5E7EB")
             strokeWidth = 1.5f
             style = Paint.Style.STROKE
         }
@@ -395,23 +647,36 @@ class ExcelDocumentEngine : DocumentEngine {
         }
 
         val rowH = 65f
-        val colW = 160f
         val startY = 80f
         val startX = 80f
 
-        // Draw headers and cells
         for (r in 0 until minOf(targetSheet.maxRow, 25)) {
             val y = startY + r * rowH
+            var currentX = startX
             for (c in 0 until minOf(targetSheet.maxCol, 6)) {
-                val x = startX + c * colW
+                val colW = targetSheet.getColWidth(c).coerceIn(90f, 220f)
+                val cell = targetSheet.getCell(r, c)
+
+                // Background fill
                 if (r == 0) {
-                    canvas.drawRect(x, y, x + colW, y + rowH, headerPaint)
+                    canvas.drawRect(currentX, y, currentX + colW, y + rowH, headerPaint)
+                } else if (cell.style.bgColorHex != null) {
+                    try {
+                        val bgP = Paint().apply {
+                            color = AndroidColor.parseColor(cell.style.bgColorHex)
+                            style = Paint.Style.FILL
+                        }
+                        canvas.drawRect(currentX, y, currentX + colW, y + rowH, bgP)
+                    } catch (_: Exception) {}
                 }
-                canvas.drawRect(x, y, x + colW, y + rowH, gridPaint)
-                val cellVal = targetSheet.getCell(r, c).getDisplayValue(targetSheet.cells)
+
+                canvas.drawRect(currentX, y, currentX + colW, y + rowH, gridPaint)
+                val cellVal = cell.getDisplayValue(targetSheet.cells)
                 if (cellVal.isNotEmpty()) {
-                    canvas.drawText(cellVal.take(10), x + 10f, y + rowH * 0.65f, paint)
+                    paint.isFakeBoldText = cell.style.isBold || r == 0
+                    canvas.drawText(cellVal.take(12), currentX + 12f, y + rowH * 0.65f, paint)
                 }
+                currentX += colW
             }
         }
         bmp
@@ -506,7 +771,6 @@ class ExcelDocumentEngine : DocumentEngine {
             val uri = targetUri ?: _metadata?.uri ?: return@withContext Result.failure(IllegalStateException("No target URI"))
             val targetFile = File(context.cacheDir, "saved_${System.currentTimeMillis()}.csv")
 
-            // Save active sheet as clean CSV or XLSX
             FileOutputStream(targetFile).use { fos ->
                 val sheet = currentSheet
                 for (r in 0 until sheet.maxRow) {

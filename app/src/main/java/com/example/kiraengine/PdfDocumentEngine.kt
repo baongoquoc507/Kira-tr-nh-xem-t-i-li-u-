@@ -93,17 +93,29 @@ class PdfDocumentEngine : DocumentEngine {
         var pageBitmap: Bitmap? = null
         synchronized(renderer) {
             val page = renderer.openPage(index)
-            val width = if (targetWidth > 0) targetWidth else page.width
-            val height = if (targetHeight > 0) targetHeight else page.height
+            val pageAspect = page.width.toFloat() / page.height.toFloat()
 
-            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val (renderW, renderH) = if (targetWidth > 0 && targetHeight > 0) {
+                val targetAspect = targetWidth.toFloat() / targetHeight.toFloat()
+                if (targetAspect > pageAspect) {
+                    val w = (targetHeight * pageAspect).toInt()
+                    Pair(w, targetHeight)
+                } else {
+                    val h = (targetWidth / pageAspect).toInt()
+                    Pair(targetWidth, h)
+                }
+            } else {
+                Pair((page.width * 2f).toInt(), (page.height * 2f).toInt())
+            }
+
+            val bmp = Bitmap.createBitmap(renderW.coerceAtLeast(100), renderH.coerceAtLeast(100), Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
             canvas.drawColor(AndroidColor.WHITE)
             page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             page.close()
 
             // Paint user annotations on top of page bitmap
-            drawAnnotations(canvas, index, width.toFloat() / page.width.toFloat())
+            drawAnnotations(canvas, index, renderW.toFloat() / page.width.toFloat())
 
             bitmapCache.put(cacheKey, bmp)
             pageBitmap = bmp

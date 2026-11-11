@@ -21,15 +21,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FormatBold
+import androidx.compose.material.icons.filled.FormatColorFill
+import androidx.compose.material.icons.filled.FormatColorText
+import androidx.compose.material.icons.filled.Functions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -50,6 +58,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.kiraengine.EditCommand
@@ -58,7 +67,6 @@ import com.example.kiraengine.ExcelFormulaEvaluator
 import com.example.ui.components.GlassSurface
 import com.example.ui.theme.ExcelGreen
 import com.example.ui.theme.InterFontFamily
-import com.example.ui.theme.IosBlue
 import com.example.ui.theme.LocalLiquidGlass
 import com.example.ui.viewmodel.ReadingMode
 import com.example.ui.viewmodel.ViewerViewModel
@@ -79,6 +87,8 @@ fun ExcelViewerScreen(
 
     var showAddSheetDialog by remember { mutableStateOf(false) }
     var showRenameSheetDialog by remember { mutableStateOf(false) }
+    var showFillColorMenu by remember { mutableStateOf(false) }
+    var showTextColorMenu by remember { mutableStateOf(false) }
 
     val currentSheet = engine.currentSheet
     val activeCell = currentSheet.getCell(selectedRow, selectedCol)
@@ -96,27 +106,28 @@ fun ExcelViewerScreen(
 
     val gridBorderColor = if (readingMode == ReadingMode.NIGHT) Color(0xFF374151) else Color(0xFFE5E7EB)
     val headerBgColor = if (readingMode == ReadingMode.NIGHT) Color(0xFF111827) else Color(0xFFF3F4F6)
-    val textColor = if (readingMode == ReadingMode.NIGHT) Color(0xFFF9FAFB) else Color(0xFF111827)
+    val defaultTextColor = if (readingMode == ReadingMode.NIGHT) Color(0xFFF9FAFB) else Color(0xFF111827)
 
     Column(modifier = modifier.fillMaxSize()) {
-        // Formula Bar
+        // Authentic Excel Formula Bar
         GlassSurface(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
+                .padding(horizontal = 14.dp, vertical = 4.dp),
             shape = RoundedCornerShape(14.dp),
             elevation = 3.dp
         ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Cell coordinate badge e.g. A1
+                    // Cell Name Box (e.g. A1, B4)
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
                             .background(ExcelGreen.copy(alpha = 0.15f))
+                            .border(1.dp, ExcelGreen.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
@@ -134,8 +145,8 @@ fun ExcelViewerScreen(
                         text = "fx",
                         fontFamily = InterFontFamily,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = glass.contentSecondary
+                        fontSize = 15.sp,
+                        color = ExcelGreen
                     )
 
                     Spacer(modifier = Modifier.width(8.dp))
@@ -171,36 +182,42 @@ fun ExcelViewerScreen(
                                 )
                                 isEditingCell = false
                             },
-                            modifier = Modifier.size(30.dp)
+                            modifier = Modifier.size(28.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = "Áp dụng",
-                                tint = ExcelGreen,
-                                modifier = Modifier.size(18.dp)
-                            )
+                            Icon(imageVector = Icons.Default.Check, contentDescription = "Đồng ý", tint = ExcelGreen, modifier = Modifier.size(18.dp))
+                        }
+
+                        IconButton(
+                            onClick = {
+                                isEditingCell = false
+                                formulaBarText = activeCell.formula ?: activeCell.rawValue
+                            },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Close, contentDescription = "Hủy", tint = Color.Gray, modifier = Modifier.size(16.dp))
                         }
                     }
                 }
 
-                // Quick Formula Suggestions Row
+                // Quick Formula Palette Row
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        .padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val formulas = listOf("=SUM(", "=AVERAGE(", "=MIN(", "=MAX(", "=COUNT(", "+", "*")
+                    val formulas = listOf("=SUM(", "=AVERAGE(", "=MIN(", "=MAX(", "=COUNT(", "=IF(", "+", "-", "*", "/")
                     formulas.forEach { f ->
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(6.dp))
-                                .background(glass.borderColor.copy(alpha = 0.2f))
+                                .background(glass.borderColor.copy(alpha = 0.25f))
                                 .clickable {
                                     isEditingCell = true
                                     formulaBarText = if (formulaBarText.startsWith("=")) formulaBarText + f.removePrefix("=") else f
                                 }
-                                .padding(horizontal = 7.dp, vertical = 3.dp)
+                                .padding(horizontal = 7.dp, vertical = 2.dp)
                         ) {
                             Text(
                                 text = f,
@@ -222,21 +239,20 @@ fun ExcelViewerScreen(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp)
-                .shadow(elevation = 4.dp, shape = RoundedCornerShape(12.dp))
-                .clip(RoundedCornerShape(12.dp))
+                .padding(horizontal = 14.dp, vertical = 4.dp)
+                .shadow(elevation = 6.dp, shape = RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(10.dp))
                 .background(paperColor)
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // Top Header Row (A, B, C...)
+                // Frozen Header Row (A, B, C...)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(34.dp)
+                        .height(32.dp)
                         .background(headerBgColor)
                         .horizontalScroll(horizontalScrollState)
                 ) {
-                    // Corner blank cell (Row header intersection)
                     Box(
                         modifier = Modifier
                             .width(44.dp)
@@ -250,12 +266,14 @@ fun ExcelViewerScreen(
                     for (c in 0 until currentSheet.maxCol) {
                         val colLetter = ExcelFormulaEvaluator.formatColName(c)
                         val isColSel = c == selectedCol
+                        val colWidth = currentSheet.getColWidth(c).dp
+
                         Box(
                             modifier = Modifier
-                                .width(110.dp)
+                                .width(colWidth)
                                 .fillMaxHeight()
                                 .border(0.5.dp, gridBorderColor)
-                                .background(if (isColSel) ExcelGreen.copy(alpha = 0.15f) else Color.Transparent),
+                                .background(if (isColSel) ExcelGreen.copy(alpha = 0.2f) else Color.Transparent),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
@@ -263,7 +281,7 @@ fun ExcelViewerScreen(
                                 fontFamily = InterFontFamily,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
-                                color = if (isColSel) ExcelGreen else textColor
+                                color = if (isColSel) ExcelGreen else defaultTextColor
                             )
                         }
                     }
@@ -275,10 +293,10 @@ fun ExcelViewerScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(38.dp)
+                                .height(36.dp)
                                 .horizontalScroll(horizontalScrollState)
                         ) {
-                            // Row Number Header (1, 2, 3...)
+                            // Row Number Header
                             val isRowSel = r == selectedRow
                             Box(
                                 modifier = Modifier
@@ -293,20 +311,30 @@ fun ExcelViewerScreen(
                                     fontFamily = InterFontFamily,
                                     fontSize = 11.sp,
                                     fontWeight = if (isRowSel) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isRowSel) ExcelGreen else textColor
+                                    color = if (isRowSel) ExcelGreen else defaultTextColor
                                 )
                             }
 
-                            // Row Cells
+                            // Data Cells with Real Fill Colors & Formatting
                             for (c in 0 until currentSheet.maxCol) {
                                 val isSelected = (r == selectedRow && c == selectedCol)
                                 val cell = currentSheet.getCell(r, c)
                                 val displayValue = cell.getDisplayValue(currentSheet.cells)
+                                val colWidth = currentSheet.getColWidth(c).dp
+
+                                val customBg = cell.style.bgColorHex?.let {
+                                    try { Color(android.graphics.Color.parseColor(it)) } catch (_: Exception) { null }
+                                } ?: if (cell.bgColor != null) Color(cell.bgColor!!) else Color.Transparent
+
+                                val customTextC = cell.style.textColorHex?.let {
+                                    try { Color(android.graphics.Color.parseColor(it)) } catch (_: Exception) { null }
+                                } ?: defaultTextColor
 
                                 Box(
                                     modifier = Modifier
-                                        .width(110.dp)
+                                        .width(colWidth)
                                         .fillMaxHeight()
+                                        .background(customBg)
                                         .border(
                                             width = if (isSelected) 2.dp else 0.5.dp,
                                             color = if (isSelected) ExcelGreen else gridBorderColor
@@ -324,8 +352,9 @@ fun ExcelViewerScreen(
                                         text = displayValue,
                                         fontFamily = InterFontFamily,
                                         fontSize = 13.sp,
+                                        fontWeight = if (cell.style.isBold || cell.isBold || r == 0) FontWeight.Bold else FontWeight.Normal,
                                         maxLines = 1,
-                                        color = textColor
+                                        color = customTextC
                                     )
                                 }
                             }
@@ -335,11 +364,125 @@ fun ExcelViewerScreen(
             }
         }
 
-        // Sheet Tabs Bar
+        // Office Excel Formatting Bar (Bold, Fill Color, Font Color, Format)
         GlassSurface(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
+                .padding(horizontal = 14.dp, vertical = 2.dp),
+            shape = RoundedCornerShape(14.dp),
+            elevation = 4.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Bold Toggle
+                IconButton(
+                    onClick = {
+                        val currentStyle = activeCell.style
+                        activeCell.style = currentStyle.copy(isBold = !currentStyle.isBold)
+                        activeCell.isBold = activeCell.style.isBold
+                    },
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FormatBold,
+                        contentDescription = "In đậm ô",
+                        tint = if (activeCell.style.isBold || activeCell.isBold) ExcelGreen else glass.contentSecondary
+                    )
+                }
+
+                // Cell Fill Color
+                Box {
+                    IconButton(
+                        onClick = { showFillColorMenu = true },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.FormatColorFill, contentDescription = "Tô màu ô", tint = ExcelGreen)
+                    }
+
+                    DropdownMenu(expanded = showFillColorMenu, onDismissRequest = { showFillColorMenu = false }) {
+                        val fills = listOf(
+                            Pair("Mặc định", null),
+                            Pair("Xanh lá Excel", "#D9EAD3"),
+                            Pair("Vàng nhạt", "#FFF2CC"),
+                            Pair("Xanh dương nhạt", "#C9DAF8"),
+                            Pair("Xám viền", "#EFEFEF"),
+                            Pair("Cam nhạt", "#FCE5CD")
+                        )
+                        fills.forEach { (name, hex) ->
+                            DropdownMenuItem(
+                                text = { Text(name, fontFamily = InterFontFamily) },
+                                onClick = {
+                                    activeCell.style = activeCell.style.copy(bgColorHex = hex)
+                                    showFillColorMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Text Color
+                Box {
+                    IconButton(
+                        onClick = { showTextColorMenu = true },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.FormatColorText, contentDescription = "Màu chữ", tint = glass.contentSecondary)
+                    }
+
+                    DropdownMenu(expanded = showTextColorMenu, onDismissRequest = { showTextColorMenu = false }) {
+                        val colors = listOf(
+                            Pair("Tự động", null),
+                            Pair("Đỏ", "#DC2626"),
+                            Pair("Xanh lá", "#16A34A"),
+                            Pair("Xanh dương", "#2563EB"),
+                            Pair("Trắng", "#FFFFFF")
+                        )
+                        colors.forEach { (name, hex) ->
+                            DropdownMenuItem(
+                                text = { Text(name, fontFamily = InterFontFamily) },
+                                onClick = {
+                                    activeCell.style = activeCell.style.copy(textColorHex = hex)
+                                    showTextColorMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Currency format ₫
+                IconButton(
+                    onClick = {
+                        val isCurr = activeCell.style.numFmtId == 4
+                        activeCell.style = activeCell.style.copy(numFmtId = if (isCurr) 0 else 4)
+                    },
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Text("₫", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = if (activeCell.style.numFmtId == 4) ExcelGreen else glass.contentSecondary)
+                }
+
+                // Percent format %
+                IconButton(
+                    onClick = {
+                        val isPct = activeCell.style.numFmtId == 9
+                        activeCell.style = activeCell.style.copy(numFmtId = if (isPct) 0 else 9)
+                    },
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Text("%", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = if (activeCell.style.numFmtId == 9) ExcelGreen else glass.contentSecondary)
+                }
+            }
+        }
+
+        // Multi-Sheet Tabs Bar
+        GlassSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp),
             shape = RoundedCornerShape(16.dp),
             elevation = 6.dp
         ) {
@@ -358,7 +501,7 @@ fun ExcelViewerScreen(
                         val isSheetSelected = idx == engine.currentSheetIndex
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(8.dp))
                                 .background(if (isSheetSelected) ExcelGreen else Color.Transparent)
                                 .clickable {
                                     engine.currentSheetIndex = idx
@@ -378,30 +521,18 @@ fun ExcelViewerScreen(
                     }
                 }
 
-                // Add Sheet
                 IconButton(
                     onClick = { showAddSheetDialog = true },
                     modifier = Modifier.size(32.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Thêm trang tính",
-                        tint = ExcelGreen,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Icon(imageVector = Icons.Default.Add, contentDescription = "Thêm trang tính", tint = ExcelGreen, modifier = Modifier.size(18.dp))
                 }
 
-                // Rename Sheet
                 IconButton(
                     onClick = { showRenameSheetDialog = true },
                     modifier = Modifier.size(32.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = "Đổi tên trang tính",
-                        tint = glass.contentSecondary,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Icon(imageVector = Icons.Default.Edit, contentDescription = "Đổi tên", tint = glass.contentSecondary, modifier = Modifier.size(16.dp))
                 }
             }
         }

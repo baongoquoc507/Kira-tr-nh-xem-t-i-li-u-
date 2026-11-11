@@ -20,10 +20,10 @@ class ExampleUnitTest {
         assertEquals("133.33", avgResult)
 
         val minResult = ExcelFormulaEvaluator.evaluate("=MIN(A1:A3)", cells)
-        assertEquals("50.0", minResult)
+        assertEquals("50", minResult)
 
         val maxResult = ExcelFormulaEvaluator.evaluate("=MAX(A1:A3)", cells)
-        assertEquals("250.0", maxResult)
+        assertEquals("250", maxResult)
 
         val countResult = ExcelFormulaEvaluator.evaluate("=COUNT(A1:A3)", cells)
         assertEquals("3", countResult)

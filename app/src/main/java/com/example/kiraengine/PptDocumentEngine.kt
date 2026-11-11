@@ -2,9 +2,11 @@ package com.example.kiraengine
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
@@ -13,19 +15,50 @@ import kotlinx.coroutines.withContext
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.StringReader
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 
+data class PptTextRun(
+    var text: String = "",
+    var isBold: Boolean = false,
+    var isItalic: Boolean = false,
+    var colorHex: String? = null,
+    var fontSizePt: Float = 16f
+)
+
+data class PptParagraph(
+    val runs: MutableList<PptTextRun> = mutableListOf(),
+    var isBullet: Boolean = false,
+    var alignment: String = "left"
+) {
+    val fullText: String get() = runs.joinToString("") { it.text }
+}
+
+data class PptShape(
+    var id: String = java.util.UUID.randomUUID().toString(),
+    var xRatio: Float = 0.05f,
+    var yRatio: Float = 0.1f,
+    var wRatio: Float = 0.9f,
+    var hRatio: Float = 0.2f,
+    var bgHex: String? = null,
+    val paragraphs: MutableList<PptParagraph> = mutableListOf(),
+    var isTitle: Boolean = false,
+    var imageBitmap: Bitmap? = null
+)
+
 data class PptSlide(
     val id: String = java.util.UUID.randomUUID().toString(),
     var slideNumber: Int,
-    var title: String,
+    var title: String = "",
     val bulletPoints: MutableList<String> = mutableListOf(),
     var bgHexColor: String = "#FFFFFF",
-    var subtitle: String? = null
+    var subtitle: String? = null,
+    val shapes: MutableList<PptShape> = mutableListOf(),
+    var notes: String = ""
 )
 
 class PptDocumentEngine : DocumentEngine {
@@ -33,6 +66,7 @@ class PptDocumentEngine : DocumentEngine {
     override val metadata: DocumentMetadata? get() = _metadata
 
     val slides = mutableListOf<PptSlide>()
+    val mediaImages = mutableMapOf<String, Bitmap>()
     var currentSlideIndex: Int = 0
 
     private val undoStack = mutableListOf<EditCommand>()
@@ -55,24 +89,28 @@ class PptDocumentEngine : DocumentEngine {
 
             val isLegacyPpt = fileName.endsWith(".ppt", ignoreCase = true)
             val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: return@withContext Result.failure(IllegalStateException("Cannot read presentation"))
+                ?: return@withContext Result.failure(IllegalStateException("Không thể đọc tệp trình chiếu"))
             if (fileSize == 0L) fileSize = bytes.size.toLong()
 
             if (isLegacyPpt) {
                 parseLegacyPpt(bytes)
             } else {
-                parsePptx(bytes)
+                parsePptxArchive(bytes)
             }
 
             if (slides.isEmpty()) {
-                slides.add(
-                    PptSlide(
-                        slideNumber = 1,
-                        title = "Trình chiếu Kira",
-                        subtitle = "Trình bày chuyên nghiệp và mượt mà",
-                        bulletPoints = mutableListOf("Xem slide toàn màn hình", "Chỉnh sửa nội dung nhanh chóng", "Hỗ trợ tệp PPTX và PPT")
-                    )
+                val s1 = PptSlide(
+                    slideNumber = 1,
+                    title = "Trình chiếu Kira",
+                    subtitle = "Xem và trình chiếu như Microsoft PowerPoint",
+                    bulletPoints = mutableListOf(
+                        "Bố cục tỷ lệ 16:9 chuẩn văn phòng",
+                        "Chế độ trình chiếu toàn màn hình mượt mà",
+                        "100% Hoàn toàn ngoại tuyến"
+                    ),
+                    bgHexColor = "#FFFFFF"
                 )
+                slides.add(s1)
             }
 
             val meta = DocumentMetadata(
@@ -90,16 +128,27 @@ class PptDocumentEngine : DocumentEngine {
         }
     }
 
-    private fun parsePptx(bytes: ByteArray) {
+    private fun parsePptxArchive(bytes: ByteArray) {
         try {
             val zis = ZipInputStream(ByteArrayInputStream(bytes))
             var entry: ZipEntry? = zis.nextEntry
             val slideEntries = mutableMapOf<String, String>()
 
             while (entry != null) {
-                if (entry.name.startsWith("ppt/slides/slide") && entry.name.endsWith(".xml")) {
-                    val content = zis.readBytes().toString(Charsets.UTF_8)
-                    slideEntries[entry.name] = content
+                val name = entry.name
+                when {
+                    name.startsWith("ppt/slides/slide") && name.endsWith(".xml") -> {
+                        slideEntries[name] = readZipStreamToString(zis)
+                    }
+                    name.startsWith("ppt/media/") -> {
+                        val imgBytes = readZipStreamToBytes(zis)
+                        val bmp = BitmapFactory.decodeByteArray(imgBytes, 0, imgBytes.size)
+                        if (bmp != null) {
+                            val imgFileName = name.substringAfterLast("/")
+                            mediaImages[imgFileName] = bmp
+                            mediaImages[name] = bmp
+                        }
+                    }
                 }
                 entry = zis.nextEntry
             }
@@ -107,52 +156,135 @@ class PptDocumentEngine : DocumentEngine {
 
             if (slideEntries.isNotEmpty()) {
                 slideEntries.toSortedMap().forEach { (_, xml) ->
-                    val (title, bullets) = parseSlideXml(xml)
-                    slides.add(
-                        PptSlide(
-                            slideNumber = slides.size + 1,
-                            title = title.ifBlank { "Slide ${slides.size + 1}" },
-                            bulletPoints = bullets.toMutableList()
-                        )
-                    )
+                    val slide = parseSlideXmlDetailed(xml)
+                    slide.slideNumber = slides.size + 1
+                    slides.add(slide)
                 }
             }
-        } catch (_: Exception) {
-            // Fallback
-        }
+        } catch (_: Exception) {}
     }
 
-    private fun parseSlideXml(xml: String): Pair<String, List<String>> {
-        var title = ""
-        val bullets = mutableListOf<String>()
+    private fun parseSlideXmlDetailed(xml: String): PptSlide {
+        val slide = PptSlide(slideNumber = 1)
         val factory = XmlPullParserFactory.newInstance()
+        factory.isNamespaceAware = true
         val parser = factory.newPullParser()
         parser.setInput(StringReader(xml))
 
         var event = parser.eventType
-        var currentText = ""
+        var currentShape: PptShape? = null
+        var currentParagraph: PptParagraph? = null
+        var currentRun: PptTextRun? = null
+
+        var inBg = false
+        var slideBgColor: String? = null
+
+        // Standard 16:9 PPTX canvas: 12192000 x 6858000 EMUs
+        val slideW = 12192000f
+        val slideH = 6858000f
 
         while (event != XmlPullParser.END_DOCUMENT) {
-            if (event == XmlPullParser.START_TAG && parser.name?.lowercase() == "t") {
-                val t = parser.nextText().trim()
-                if (t.isNotBlank()) {
-                    if (title.isBlank()) {
-                        title = t
-                    } else {
-                        bullets.add(t)
+            val tag = parser.name?.lowercase() ?: ""
+            when (event) {
+                XmlPullParser.START_TAG -> {
+                    when (tag) {
+                        "bg" -> inBg = true
+                        "srgbclr" -> {
+                            val hex = parser.getAttributeValue(null, "val")
+                            if (!hex.isNullOrEmpty()) {
+                                val fullHex = if (hex.startsWith("#")) hex else "#$hex"
+                                if (inBg) slideBgColor = fullHex
+                                else currentRun?.colorHex = fullHex
+                            }
+                        }
+                        "sp" -> {
+                            currentShape = PptShape()
+                        }
+                        "off" -> {
+                            val x = parser.getAttributeValue(null, "x")?.toFloatOrNull() ?: 0f
+                            val y = parser.getAttributeValue(null, "y")?.toFloatOrNull() ?: 0f
+                            currentShape?.xRatio = (x / slideW).coerceIn(0f, 0.95f)
+                            currentShape?.yRatio = (y / slideH).coerceIn(0f, 0.95f)
+                        }
+                        "ext" -> {
+                            val cx = parser.getAttributeValue(null, "cx")?.toFloatOrNull() ?: 0f
+                            val cy = parser.getAttributeValue(null, "cy")?.toFloatOrNull() ?: 0f
+                            if (cx > 0) currentShape?.wRatio = (cx / slideW).coerceIn(0.05f, 1f)
+                            if (cy > 0) currentShape?.hRatio = (cy / slideH).coerceIn(0.05f, 1f)
+                        }
+                        "p" -> {
+                            currentParagraph = PptParagraph()
+                        }
+                        "buauto", "buchar", "bufont" -> {
+                            currentParagraph?.isBullet = true
+                        }
+                        "r" -> {
+                            currentRun = PptTextRun()
+                        }
+                        "rpr" -> {
+                            val sz = parser.getAttributeValue(null, "sz")?.toFloatOrNull()
+                            if (sz != null && sz > 0) {
+                                currentRun?.fontSizePt = (sz / 100f).coerceIn(10f, 60f)
+                            }
+                            val b = parser.getAttributeValue(null, "b")
+                            if (b == "1" || b == "true") currentRun?.isBold = true
+                            val i = parser.getAttributeValue(null, "i")
+                            if (i == "1" || i == "true") currentRun?.isItalic = true
+                        }
+                        "t" -> {
+                            val text = parser.nextText()
+                            if (currentRun != null) {
+                                currentRun.text += text
+                            } else if (currentParagraph != null) {
+                                currentParagraph.runs.add(PptTextRun(text = text))
+                            }
+                        }
+                    }
+                }
+                XmlPullParser.END_TAG -> {
+                    when (tag) {
+                        "bg" -> inBg = false
+                        "r" -> {
+                            if (currentRun != null && currentRun.text.isNotBlank()) {
+                                currentParagraph?.runs?.add(currentRun)
+                            }
+                            currentRun = null
+                        }
+                        "p" -> {
+                            if (currentParagraph != null && currentParagraph.runs.isNotEmpty()) {
+                                currentShape?.paragraphs?.add(currentParagraph)
+                                val text = currentParagraph.fullText
+                                if (slide.title.isBlank() && text.length < 100 && (currentShape?.yRatio ?: 1f) < 0.4f) {
+                                    slide.title = text
+                                    currentShape?.isTitle = true
+                                } else {
+                                    slide.bulletPoints.add(text)
+                                }
+                            }
+                            currentParagraph = null
+                        }
+                        "sp" -> {
+                            if (currentShape != null && currentShape.paragraphs.isNotEmpty()) {
+                                slide.shapes.add(currentShape)
+                            }
+                            currentShape = null
+                        }
                     }
                 }
             }
             event = parser.next()
         }
-        return Pair(title, bullets)
+
+        if (slideBgColor != null) slide.bgHexColor = slideBgColor
+        if (slide.title.isBlank()) slide.title = "Slide ${slide.slideNumber}"
+        return slide
     }
 
     private fun parseLegacyPpt(bytes: ByteArray) {
         val text = String(bytes, Charsets.ISO_8859_1).filter { it.code in 32..126 || it == '\n' }
         val lines = text.split("\n").filter { it.trim().length > 4 }
         var currentSlide = PptSlide(slideNumber = 1, title = lines.firstOrNull() ?: "Slide 1")
-        for ((idx, line) in lines.drop(1).take(40).withIndex()) {
+        for ((idx, line) in lines.drop(1).take(50).withIndex()) {
             if (idx % 4 == 0 && idx != 0) {
                 slides.add(currentSlide)
                 currentSlide = PptSlide(slideNumber = slides.size + 1, title = line.trim())
@@ -163,11 +295,32 @@ class PptDocumentEngine : DocumentEngine {
         slides.add(currentSlide)
     }
 
+    private fun readZipStreamToString(zis: ZipInputStream): String {
+        val baos = ByteArrayOutputStream()
+        val buf = ByteArray(2048)
+        var len: Int
+        while (zis.read(buf).also { len = it } > 0) {
+            baos.write(buf, 0, len)
+        }
+        return baos.toString("UTF-8")
+    }
+
+    private fun readZipStreamToBytes(zis: ZipInputStream): ByteArray {
+        val baos = ByteArrayOutputStream()
+        val buf = ByteArray(2048)
+        var len: Int
+        while (zis.read(buf).also { len = it } > 0) {
+            baos.write(buf, 0, len)
+        }
+        return baos.toByteArray()
+    }
+
     override fun pageCount(): Int = slides.size.coerceAtLeast(1)
 
     override suspend fun renderPage(index: Int, targetWidth: Int, targetHeight: Int): Bitmap? = withContext(Dispatchers.Default) {
+        // Standard 16:9 widescreen PowerPoint aspect ratio
         val width = if (targetWidth > 0) targetWidth else 1920
-        val height = if (targetHeight > 0) targetHeight else 1080
+        val height = if (targetHeight > 0) targetHeight else (width * 9f / 16f).toInt()
 
         val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
@@ -176,64 +329,58 @@ class PptDocumentEngine : DocumentEngine {
 
         // Background
         val bgPaint = Paint().apply {
-            color = try {
-                AndroidColor.parseColor(slide.bgHexColor)
-            } catch (_: Exception) {
-                AndroidColor.WHITE
-            }
+            color = try { AndroidColor.parseColor(slide.bgHexColor) } catch (_: Exception) { AndroidColor.WHITE }
             style = Paint.Style.FILL
         }
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
 
-        // Slide frame shadow & top accent bar
+        // Top PowerPoint Brand Stripe
         val accentPaint = Paint().apply {
-            color = AndroidColor.parseColor("#007AFF")
+            color = AndroidColor.parseColor("#C43E1C") // PowerPoint Orange-Red
             style = Paint.Style.FILL
         }
-        canvas.drawRect(0f, 0f, width.toFloat(), 16f, accentPaint)
+        canvas.drawRect(0f, 0f, width.toFloat(), 14f, accentPaint)
 
         // Title
         val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.parseColor("#111827")
-            textSize = 58f
+            textSize = 54f
             typeface = Typeface.DEFAULT_BOLD
         }
-        canvas.drawText(slide.title, 120f, 200f, titlePaint)
+        canvas.drawText(slide.title, 100f, 180f, titlePaint)
 
-        // Subtitle if any
+        // Subtitle
         slide.subtitle?.let { sub ->
             val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = AndroidColor.parseColor("#4B5563")
-                textSize = 34f
-                typeface = Typeface.DEFAULT
+                color = AndroidColor.parseColor("#6B7280")
+                textSize = 30f
             }
-            canvas.drawText(sub, 120f, 260f, subPaint)
+            canvas.drawText(sub, 100f, 235f, subPaint)
         }
 
         // Bullets
         val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.parseColor("#1F2937")
-            textSize = 38f
-            typeface = Typeface.DEFAULT
+            textSize = 36f
         }
         val bulletIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.parseColor("#007AFF")
+            color = AndroidColor.parseColor("#C43E1C")
             style = Paint.Style.FILL
         }
 
-        var yOffset = if (slide.subtitle != null) 360f else 320f
+        var yOffset = if (slide.subtitle != null) 330f else 280f
         for (bullet in slide.bulletPoints.take(7)) {
-            canvas.drawCircle(130f, yOffset - 12f, 8f, bulletIconPaint)
-            canvas.drawText(bullet, 160f, yOffset, bodyPaint)
-            yOffset += 75f
+            canvas.drawCircle(110f, yOffset - 12f, 7f, bulletIconPaint)
+            canvas.drawText(bullet, 140f, yOffset, bodyPaint)
+            yOffset += 72f
         }
 
-        // Slide number footer
+        // Footer
         val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.parseColor("#9CA3AF")
-            textSize = 28f
+            textSize = 24f
         }
-        canvas.drawText("${index + 1} / ${slides.size}", width - 200f, height - 60f, footerPaint)
+        canvas.drawText("${index + 1} / ${slides.size}", width - 160f, height - 50f, footerPaint)
 
         bmp
     }
@@ -320,7 +467,6 @@ class PptDocumentEngine : DocumentEngine {
     override suspend fun save(context: Context, targetUri: Uri?): Result<Uri> = withContext(Dispatchers.IO) {
         try {
             val uri = targetUri ?: _metadata?.uri ?: return@withContext Result.failure(IllegalStateException("No target URI"))
-            // Write slide text summary
             val sb = StringBuilder()
             for (slide in slides) {
                 sb.append("=== Slide ${slide.slideNumber}: ${slide.title} ===\n")
@@ -361,6 +507,7 @@ class PptDocumentEngine : DocumentEngine {
 
     override fun close() {
         slides.clear()
+        mediaImages.clear()
         undoStack.clear()
         redoStack.clear()
         currentSlideIndex = 0
